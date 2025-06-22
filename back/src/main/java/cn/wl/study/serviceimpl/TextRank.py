@@ -1,7 +1,10 @@
-#-*- encoding:utf-8 -*-
+# -*- encoding:utf-8 -*-
 from __future__ import (absolute_import, division, print_function,
                         unicode_literals)
-import jieba.posseg as pseg
+import nltk
+from nltk.tokenize import word_tokenize, sent_tokenize
+from nltk.corpus import stopwords
+from nltk import pos_tag
 import codecs
 import os
 import math
@@ -10,13 +13,32 @@ import numpy as np
 import sys
 import importlib
 import logging
+import string
 
-logging.getLogger('jieba').setLevel(logging.WARNING)  # 只输出警告级别以上的日志信息，而不显示详细的模型加载和构建信息
+# 下载NLTK资源（如果未下载）
+try:
+    nltk.data.find('tokenizers/punkt')
+except LookupError:
+    nltk.download('punkt')
+
+try:
+    nltk.data.find('corpora/stopwords')
+except LookupError:
+    nltk.download('stopwords')
+
+try:
+    nltk.data.find('taggers/averaged_perceptron_tagger')
+except LookupError:
+    nltk.download('averaged_perceptron_tagger')
+
+logging.getLogger().setLevel(logging.WARNING)  # 只输出警告级别以上的日志信息
 
 sys.stdout.reconfigure(encoding='utf-8')
 
-sentence_delimiters = ['?', '!', ';', '？', '！', '。', '；', '……', '…']
-allow_speech_tags = ['an', 'i', 'j', 'l', 'n', 'nr', 'nrfg', 'ns', 'nt', 'nz', 't', 'v', 'vd', 'vn', 'eng']
+# 英文分句分隔符
+sentence_delimiters = ['.', '?', '!', ';', '...']
+# 允许的词性（英文）
+allow_speech_tags = ['NN', 'NNS', 'NNP', 'NNPS', 'JJ', 'JJR', 'JJS', 'VB', 'VBD', 'VBG', 'VBN', 'VBP', 'VBZ']
 
 
 def as_text(v):  ## 生成unicode字符串
@@ -29,7 +51,9 @@ def as_text(v):  ## 生成unicode字符串
     else:
         raise ValueError('Unknown type %r' % type(v))
 
+
 __DEBUG = None
+
 
 def debug(*args):
     global __DEBUG
@@ -178,22 +202,27 @@ def get_default_stop_words_file():
 class WordSegmentation(object):
     """ 分词 """
 
-    def __init__(self, stop_words_file=None, allow_speech_tags=allow_speech_tags):
+    def __init__(self, stop_words_file=None, allow_speech_tags=allow_speech_tags, language='english'):
         """
         Keyword arguments:
         stop_words_file    -- 保存停止词的文件路径，utf8编码，每行一个停止词。若不是str类型，则使用默认的停止词
         allow_speech_tags  -- 词性列表，用于过滤
+        language           -- 语言类型，'english' 或 'chinese'
         """
 
         allow_speech_tags = [as_text(item) for item in allow_speech_tags]
 
         self.default_speech_tag_filter = allow_speech_tags
         self.stop_words = set()
-        self.stop_words_file = get_default_stop_words_file()
+        self.language = language
+
+        # 加载英文停用词
+        self.stop_words = set(stopwords.words('english'))
+
+        # 如果提供了停用词文件，则添加文件中的停用词
         if type(stop_words_file) is str:
-            self.stop_words_file = stop_words_file
-        for word in codecs.open(self.stop_words_file, 'r', 'utf-8', 'ignore'):
-            self.stop_words.add(word.strip())
+            for word in codecs.open(stop_words_file, 'r', 'utf-8', 'ignore'):
+                self.stop_words.add(word.strip())
 
     def segment(self, text, use_speech_tags_filter=False):
         """对一段文本进行分词，返回list类型的分词结果
@@ -202,22 +231,28 @@ class WordSegmentation(object):
         use_speech_tags_filter -- 是否基于词性进行过滤。若为True，则使用self.default_speech_tag_filter过滤。否则，不过滤。
         """
         text = as_text(text)
-        jieba_result = pseg.cut(text)
 
-        if use_speech_tags_filter == True:
-            jieba_result = [w for w in jieba_result if w.flag in self.default_speech_tag_filter]
-        else:
-            jieba_result = [w for w in jieba_result]
+        # 英文分词
+        words = word_tokenize(text)
 
-        # 去除特殊符号
-        word_list = [w.word.strip() for w in jieba_result if w.flag != 'x']
-        word_list = [word for word in word_list if len(word) > 0]
+        # 转换为小写
+        words = [word.lower() for word in words]
 
-        word_list = [word.lower() for word in word_list]  # 将单词小写（英文）
+        # 移除标点
+        words = [word for word in words if word not in string.punctuation]
 
-        word_list = [word.strip() for word in word_list if word.strip() not in self.stop_words]  # 利用停止词集合来过滤（去掉停止词）
+        # 词性标注
+        if use_speech_tags_filter:
+            tagged_words = pos_tag(words)
+            words = [word for word, pos in tagged_words if pos in self.default_speech_tag_filter]
 
-        return word_list
+        # 过滤停用词
+        words = [word for word in words if word not in self.stop_words]
+
+        # 过滤空词和单字符词
+        words = [word for word in words if len(word) > 1]
+
+        return words
 
     def segment_sentences(self, sentences, use_speech_tags_filter=False):
         """将列表sequences中的每个元素/句子转换为由单词构成的列表。
@@ -243,30 +278,28 @@ class SentenceSegmentation(object):
         self.delimiters = set([as_text(item) for item in delimiters])
 
     def segment(self, text):
-        res = [as_text(text)]
-
-        debug(res)
-        debug(self.delimiters)
-
-        for sep in self.delimiters:
-            text, res = res, []
-            for seq in text:
-                res += seq.split(sep)
-        res = [s.strip() for s in res if len(s.strip()) > 0]
-        return res
+        # 使用NLTK的句子分词器
+        sentences = sent_tokenize(text)
+        # 清理句子两端的空格
+        sentences = [s.strip() for s in sentences if len(s.strip()) > 0]
+        return sentences
 
 
 class Segmentation(object):
 
     def __init__(self, stop_words_file=None,
                  allow_speech_tags=allow_speech_tags,
-                 delimiters=sentence_delimiters):
+                 delimiters=sentence_delimiters,
+                 language='english'):
         """
         Keyword arguments:
         stop_words_file -- 停止词文件
         delimiters      -- 用来拆分句子的符号集合
+        language        -- 语言类型，'english' 或 'chinese'
         """
-        self.ws = WordSegmentation(stop_words_file=stop_words_file, allow_speech_tags=allow_speech_tags)
+        self.ws = WordSegmentation(stop_words_file=stop_words_file,
+                                   allow_speech_tags=allow_speech_tags,
+                                   language=language)
         self.ss = SentenceSegmentation(delimiters=delimiters)
 
     def segment(self, text):
@@ -287,13 +320,15 @@ class Segmentation(object):
 
 class TextRank4Keyword(object):
 
-    def __init__(self, stop_words_file = None,
-                 allow_speech_tags = allow_speech_tags,
-                 delimiters = sentence_delimiters):
+    def __init__(self, stop_words_file=None,
+                 allow_speech_tags=allow_speech_tags,
+                 delimiters=sentence_delimiters,
+                 language='english'):
         """
         Keyword arguments:
         stop_words_file  --  str，指定停止词文件路径（一行一个停止词），若为其他类型，则使用默认停止词文件
         delimiters       --  默认值是`?!;？！。；…\n`，用来将文本拆分为句子。
+        language         --  语言类型，'english' 或 'chinese'
 
         Object Var:
         self.words_no_stop_words  --  对sentences中每个句子分词得到两级列表，并去掉其中停止词
@@ -304,17 +339,18 @@ class TextRank4Keyword(object):
 
         self.seg = Segmentation(stop_words_file=stop_words_file,
                                 allow_speech_tags=allow_speech_tags,
-                                delimiters=delimiters)
+                                delimiters=delimiters,
+                                language=language)
 
         self.sentences = None
         self.words_no_stop_words = None
         self.words_all_filters = None
 
     def analyze(self, text,
-                window = 2,
-                vertex_source = 'all_filters',
-                edge_source = 'no_stop_words',
-                pagerank_config = {'alpha': 0.85,}):
+                window=2,
+                vertex_source='all_filters',
+                edge_source='no_stop_words',
+                pagerank_config={'alpha': 0.85, }):
         """分析文本
 
         Keyword arguments:
@@ -336,33 +372,30 @@ class TextRank4Keyword(object):
         result = self.seg.segment(text=text)
         self.sentences = result.sentences
         self.words_no_stop_words = result.words_no_stop_words
-        self.words_all_filters   = result.words_all_filters
+        self.words_all_filters = result.words_all_filters
 
-        debug(20*'*')
+        debug(20 * '*')
         debug('self.sentences in TextRank4Keyword:\n', ' || '.join(self.sentences))
         debug('self.words_no_stop_words in TextRank4Keyword:\n', self.words_no_stop_words)
         debug('self.words_all_filters in TextRank4Keyword:\n', self.words_all_filters)
 
-
         options = ['no_stop_words', 'all_filters']
 
         if vertex_source in options:
-            _vertex_source = result['words_'+vertex_source]
+            _vertex_source = result['words_' + vertex_source]
         else:
             _vertex_source = result['words_all_filters']
 
         if edge_source in options:
-            _edge_source   = result['words_'+edge_source]
+            _edge_source = result['words_' + edge_source]
         else:
-            _edge_source   = result['words_no_stop_words']
+            _edge_source = result['words_no_stop_words']
 
-        self.keywords = sort_words(_vertex_source, _edge_source, window = window, pagerank_config = pagerank_config)
+        self.keywords = sort_words(_vertex_source, _edge_source, window=window, pagerank_config=pagerank_config)
 
-    def get_keywords(self, num = 6, word_min_len = 1):
+    def get_keywords(self, num=6, word_min_len=1):
         """获取最重要的num个长度大于等于word_min_len的关键词。
-
-        Return:
-        关键词列表。
+        Return:关键词列表。
         """
         result = []
         count = 0
@@ -379,11 +412,13 @@ class TextRank4Sentence(object):
 
     def __init__(self, stop_words_file=None,
                  allow_speech_tags=allow_speech_tags,
-                 delimiters=sentence_delimiters):
+                 delimiters=sentence_delimiters,
+                 language='english'):
         """
         Keyword arguments:
         stop_words_file  --  str，停止词文件路径，若不是str则是使用默认停止词文件
         delimiters       --  默认值是`?!;？！。；…\n`，用来将文本拆分为句子。
+        language         --  语言类型，'english' 或 'chinese'
 
         Object Var:
         self.sentences               --  由句子组成的列表。
@@ -392,7 +427,8 @@ class TextRank4Sentence(object):
         """
         self.seg = Segmentation(stop_words_file=stop_words_file,
                                 allow_speech_tags=allow_speech_tags,
-                                delimiters=delimiters)
+                                delimiters=delimiters,
+                                language=language)
 
         self.sentences = None
         self.words_no_stop_words = None
@@ -427,15 +463,13 @@ class TextRank4Sentence(object):
             _source = result['words_no_stop_words']
 
         self.key_sentences = sort_sentences(sentences=self.sentences,
-                                                 words=_source,
-                                                 sim_func=sim_func,
-                                                 pagerank_config=pagerank_config)
+                                            words=_source,
+                                            sim_func=sim_func,
+                                            pagerank_config=pagerank_config)
 
     def get_key_sentences(self, num=6, sentence_min_len=6):
         """获取最重要的num个长度大于等于sentence_min_len的句子用来生成摘要。
-
-        Return:
-        多个句子组成的列表。
+        Return:多个句子组成的列表。
         """
         result = []
         count = 0
@@ -455,18 +489,22 @@ def main(text):
     except:
         pass
 
-    tr4w = TextRank4Keyword()
+    tr4w = TextRank4Keyword(language='english')
 
-    tr4w.analyze(text=text, window=2)   # py3中必须是utf8编码的bytes或者str对象
+    tr4w.analyze(text=text, window=2)  # py3中必须是utf8编码的bytes或者str对象
 
-    print("<p><strong>--关键字:",end=" ")
-    for item in tr4w.get_keywords(3, word_min_len=1):
-        print(item.word,end=" ")
+    # 格式化关键词输出
+    keywords = [item.word for item in tr4w.get_keywords(3, word_min_len=1)]
+    if len(keywords) >= 2:
+        for i in range(len(keywords)-1):
+            print(keywords[i],end=', ')
+    print(keywords[-1])
 
-    tr4s = TextRank4Sentence()
-    tr4s.analyze(text=text, source = 'all_filters')
+    tr4s = TextRank4Sentence(language='english')
+    tr4s.analyze(text=text, source='all_filters')
 
     for item in tr4s.get_key_sentences(num=1):
-        print("</strong></p><p><strong>--概要: "+item.sentence+"</strong></p>",end="")
+        print("--Summary:" + item.sentence)
+
 
 main(sys.argv[1])

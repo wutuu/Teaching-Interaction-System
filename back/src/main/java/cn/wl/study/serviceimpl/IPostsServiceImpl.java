@@ -75,7 +75,7 @@ public class IPostsServiceImpl extends ServiceImpl<PostsMapper, Posts> implement
     @Override
     public String getSummary(String postsContent){
         try {
-            String[] args = new String[]{"python", "back/src/main/java/cn/wl/study/serviceimpl/TextRank4.py", postsContent};
+            String[] args = new String[]{"python", "back/src/main/java/cn/wl/study/serviceimpl/TextRank.py", postsContent};
             Process proc = Runtime.getRuntime().exec(args);
             BufferedReader in = new BufferedReader(new InputStreamReader(proc.getInputStream(), "UTF-8"));
             BufferedReader err = new BufferedReader(new InputStreamReader(proc.getErrorStream()));

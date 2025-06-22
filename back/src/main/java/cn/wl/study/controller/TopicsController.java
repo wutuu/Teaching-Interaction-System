@@ -57,25 +57,6 @@ public class TopicsController {
         return new ResultUtil<List<Topics>>().setData(topics);
     }
 
-    /*
-    @RequestMapping(value = "/getByPage", method = RequestMethod.GET)
-    @ApiOperation(value = "分页查询主题")
-    public Result<IPage<Topics>> getByPage(@ModelAttribute Topics topics , @ModelAttribute PageVo page){
-        QueryWrapper<Topics> qw = new QueryWrapper<>();
-        if(!WlNullUtils.isNull(topics.getTitle())) {
-            qw.like("content",topics.getTitle());
-        }
-        if(!WlNullUtils.isNull(topics.getDescription())){
-            qw.like("description",topics.getDescription());
-        }
-        if(topics.getCreateBy() != null) {
-            qw.like("user_id",topics.getCreateBy());
-        }
-        IPage<Topics> data = iTopicsService.page(PageUtil.initMpPage(page),qw);
-        return new ResultUtil<IPage<Topics>>().setData(data);
-    }
-     */
-
     @RequestMapping(value = "/insertOrUpdate", method = RequestMethod.POST)
     @ApiOperation(value = "增改主题")
     public Result<Topics> saveOrUpdate(Topics topics){
